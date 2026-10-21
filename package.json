@@ -1,0 +1,20 @@
+{
+  "name": "banana-gallery-downloader",
+  "version": "1.0.0",
+  "description": "Lädt alle Bilder aller Alben/Sub-Events der Banana Club Mallorca Fotogalerie herunter – inklusive aller per \"Mehr laden\" / Endlos-Scroll nachgeladenen Bilder.",
+  "type": "module",
+  "bin": {
+    "banana-gallery-downloader": "src/cli.js"
+  },
+  "scripts": {
+    "start": "node src/cli.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "dependencies": {
+    "playwright": "1.56.1"
+  },
+  "license": "MIT"
+}
