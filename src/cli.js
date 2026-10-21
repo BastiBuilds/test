@@ -4,25 +4,29 @@ import { writeFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { GalleryCrawler, DEFAULT_LOAD_MORE } from './crawler.js';
+import { GalleryCrawler, DEFAULT_LOAD_MORE, DEFAULT_FILTER } from './crawler.js';
 import { Downloader } from './downloader.js';
 import { sanitizeName, slugFor } from './urls.js';
 import { renderIndexHtml } from './report.js';
 
-export const DEFAULT_URL = 'https://www.bananaclub.es/gallery';
+// The gallery covers all venues (Alcúdia, Cala Rajada & co). The Cala Rajada URL is only
+// used if it exists (HTTP 404 is skipped); albums found twice are downloaded once.
+export const DEFAULT_URLS = ['https://www.bananaclub.es/gallery', 'https://www.bananaclub.es/cala-rajada/gallery'];
 
 const HELP = `
 Banana Club Mallorca – Fotogalerie-Downloader
 
-Lädt ALLE Bilder ALLER Alben (Sub-Events) der Galerie herunter. Klickt dabei so lange
-auf "Mehr laden" / scrollt (Endlos-Scroll) / folgt Seitenzahlen, bis nichts Neues mehr kommt –
-sowohl in der Album-Übersicht als auch in jedem einzelnen Album.
+Lädt ALLE Bilder ALLER Alben (Sub-Events) der Galerie herunter – Alcúdia, Cala Rajada & Co.
+Klickt dabei jeden Standort-/Kategorie-Filter an und so lange auf "Mehr laden" / scrollt
+(Endlos-Scroll) / folgt Seitenzahlen, bis nichts Neues mehr kommt – sowohl in der
+Album-Übersicht als auch in jedem einzelnen Album.
 
 Aufruf:
   node src/cli.js [Optionen]
 
 Optionen:
-  --url <URL>            Galerie-Startseite (mehrfach möglich). Standard: ${DEFAULT_URL}
+  --url <URL>            Galerie-Startseite (mehrfach möglich). Standard:
+                           ${DEFAULT_URLS.join('\n                           ')}
   --out <Ordner>         Zielordner. Standard: ./downloads
   --concurrency <n>      Parallele Bild-Downloads. Standard: 8
   --pages <n>            Parallel geöffnete Album-Seiten im Browser. Standard: 3
@@ -30,6 +34,7 @@ Optionen:
   --depth <n>            Wie tief Unteralben verfolgt werden (1 = nur Alben). Standard: 2
   --album-pattern <re>   Regex für Album-Links, falls die automatische Erkennung nicht passt
   --load-more <re>       Regex für den "Mehr laden"-Button (ersetzt den Standard)
+  --filter <re>          Regex für Filter/Tabs der Übersicht (Standard: Alle, Alcúdia, Cala Rajada, …)
   --max-rounds <n>       Max. Nachlade-Runden pro Seite. Standard: 400
   --dry-run              Nur finden und auflisten (manifest.json), nichts herunterladen
   --headful              Browser sichtbar starten (zum Zuschauen/Debuggen)
@@ -74,6 +79,7 @@ export async function run(argv = process.argv.slice(2), io = { log: console.log,
       depth: { type: 'string', default: '2' },
       'album-pattern': { type: 'string' },
       'load-more': { type: 'string' },
+      filter: { type: 'string' },
       'max-rounds': { type: 'string', default: '400' },
       'dry-run': { type: 'boolean', default: false },
       headful: { type: 'boolean', default: false },
@@ -87,7 +93,7 @@ export async function run(argv = process.argv.slice(2), io = { log: console.log,
     return { exitCode: 0 };
   }
 
-  const urls = values.url?.length ? values.url : [DEFAULT_URL];
+  const urls = values.url?.length ? values.url : DEFAULT_URLS;
   const outDir = path.resolve(values.out);
   const t0 = Date.now();
   const crawler = new GalleryCrawler({
@@ -98,11 +104,16 @@ export async function run(argv = process.argv.slice(2), io = { log: console.log,
     maxRounds: Number(values['max-rounds']),
     albumPattern: values['album-pattern'] ? new RegExp(values['album-pattern'], 'i') : null,
     loadMore: values['load-more'] || DEFAULT_LOAD_MORE,
+    filter: values.filter || DEFAULT_FILTER,
     proxy: values.proxy || null,
   });
   crawler.on('log', (m) => io.log(m));
   crawler.on('gallery', (g) =>
-    io.log(`✔ Galerie ${g.url}: ${g.albums} Alben gefunden (${g.clicks}× "Mehr laden" geklickt, ${g.pages} Seite(n))`),
+    io.log(
+      g.skipped
+        ? `– Galerie ${g.url} gibt es nicht – übersprungen`
+        : `✔ Galerie ${g.url}: ${g.albums} neue Alben gefunden (${g.clicks}× "Mehr laden", ${g.filters} Filter/Tabs, ${g.pages} Seite(n))`,
+    ),
   );
 
   const albums = [];

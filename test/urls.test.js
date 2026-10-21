@@ -6,6 +6,7 @@ import {
   pickAlbumLinks,
   pickChildLinks,
   isPaginationOf,
+  isListingVariant,
   mergeItems,
   fileNameFor,
   stripLocale,
@@ -96,6 +97,15 @@ test('isPaginationOf', () => {
   assert.equal(isPaginationOf('https://s.es/gallery/album', 'https://s.es/gallery'), false);
   assert.equal(isPaginationOf('https://s.es/gallery?sort=new', 'https://s.es/gallery'), false);
   assert.equal(isPaginationOf('https://s.es/gallery', 'https://s.es/gallery'), false);
+});
+
+test('isListingVariant: Filter-/Seiten-Varianten der Übersicht, aber keine Alben/Sprachen', () => {
+  const g = 'https://s.es/gallery';
+  assert.equal(isListingVariant('https://s.es/gallery?location=cala-rajada', g), true);
+  assert.equal(isListingVariant('https://s.es/gallery?page=3', g), true);
+  assert.equal(isListingVariant('https://s.es/gallery/disco-51', g), false);
+  assert.equal(isListingVariant('https://s.es/es/gallery', g), false);
+  assert.equal(isListingVariant('https://other.es/gallery?x=1', g), false);
 });
 
 test('mergeItems: Lazy-Loading-Snapshots desselben Fotos werden zusammengeführt, bestes zuerst', () => {

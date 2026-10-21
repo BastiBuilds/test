@@ -56,6 +56,17 @@ const GIF_1PX = Buffer.from('R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAI
 const PARTIES = ['DISCO 51', 'GLOW SAFARI', 'BURNING WEST', 'DURO', 'OASIS', 'LE CIRQUE DE LA LUNE', 'WELCOME TO FABULOUS CABARET'];
 const TYPES = ['button', 'infinite', 'next', 'download', 'paged'];
 const COUNTS = [57, 33, 41, 25, 47, 70, 0, 12, 45, 29, 60, 18, 37, 22, 50, 15, 9, 0];
+// Cala Rajada albums are only listed after clicking the "Cala Rajada" tab of the overview.
+const CALA = [
+  ['OPENING CALA RAJADA', 35],
+  ['SATURDAYS', 28],
+  ['DISCO 51', 44],
+  ['GLOW SAFARI', 19],
+  ['BURNING WEST', 52],
+  ['SATURDAYS', 23],
+  ['DURO', 31],
+  ['OASIS', 16],
+];
 const slugify = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
 export function buildAlbums() {
@@ -65,7 +76,7 @@ export function buildAlbums() {
     const iso = d.toISOString().slice(0, 10);
     const title = PARTIES[i % PARTIES.length];
     const slug = `${slugify(title)}-${iso}`;
-    const a = { i, slug, title, date: iso.split('-').reverse().join('.'), type: TYPES[i % TYPES.length], count: COUNTS[i], subs: [] };
+    const a = { i, venue: 'alcudia', slug, title, date: iso.split('-').reverse().join('.'), type: TYPES[i % TYPES.length], count: COUNTS[i], subs: [] };
     if (i === 6) a.type = 'plain';
     if (i === COUNTS.length - 1) {
       a.type = 'parent';
@@ -77,7 +88,28 @@ export function buildAlbums() {
     }
     albums.push(a);
   }
+  CALA.forEach(([title, count], j) => {
+    const d = new Date(Date.UTC(2026, 8, 5 - j * 7));
+    const iso = d.toISOString().slice(0, 10);
+    albums.push({
+      i: COUNTS.length + j,
+      venue: 'cala-rajada',
+      slug: `cala-rajada-${slugify(title)}-${iso}`,
+      title,
+      date: iso.split('-').reverse().join('.'),
+      type: TYPES[(j + 2) % TYPES.length],
+      count,
+      subs: [],
+    });
+  });
   return albums;
+}
+
+// Albums of the overview for a venue tab (page 1 only; page 2 is server rendered).
+function listFor(albums, venue) {
+  const alc = albums.filter((a) => a.venue === 'alcudia').slice(0, 15);
+  const cala = albums.filter((a) => a.venue === 'cala-rajada');
+  return venue === 'cala-rajada' ? cala : venue === 'all' ? [...alc, ...cala] : alc;
 }
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
@@ -181,17 +213,23 @@ function albumPage(a, related, query) {
 }
 
 function galleryPage(albums, page) {
-  const PAGE1 = 15;
   const FIRST = 6;
-  const p1 = albums.slice(0, PAGE1);
-  const p2 = albums.slice(PAGE1);
+  const alc = albums.filter((a) => a.venue === 'alcudia');
   const nav = `<nav class="pagination"><a href="/gallery?page=1">1</a> <a href="/gallery?page=2">2</a>${page === 1 ? ' <a rel="next" href="/gallery?page=2">Weiter ›</a>' : ''}</nav>`;
-  if (page === 2) return layout('Fotogalerie – Seite 2', `<h1>Fotogalerie</h1><div class="cards">${p2.map(cardHtml).join('')}</div>${nav}`);
-  const body = `<h1>Fotogalerie</h1><div class="cards" id="cards">${p1.slice(0, FIRST).map(cardHtml).join('')}</div>
+  if (page === 2) return layout('Fotogalerie – Seite 2', `<h1>Fotogalerie</h1><div class="cards">${alc.slice(15).map(cardHtml).join('')}</div>${nav}`);
+  const tabs = `<div class="gallery-filter" role="tablist">
+      <button role="tab" data-venue="alcudia" aria-selected="true">Alcúdia</button>
+      <button role="tab" data-venue="cala-rajada">Cala Rajada</button></div>`;
+  const body = `<h1>Fotogalerie</h1>${tabs}<div class="cards" id="cards">${listFor(albums, 'alcudia').slice(0, FIRST).map(cardHtml).join('')}</div>
     <div class="load-more-wrap"><button class="btn-load">Mehr laden</button></div>${nav}`;
-  const script = `const card=${cardHtml.toString()};const esc=${esc.toString()};let offset=${FIRST};
-    document.querySelector('.btn-load').addEventListener('click',async(e)=>{const r=await fetch('/api/albums?offset='+offset+'&limit=4');const j=await r.json();
-      const c=document.getElementById('cards');j.items.forEach(a=>c.insertAdjacentHTML('beforeend',card(a)));offset+=j.items.length;if(!j.hasMore)e.target.closest('.load-more-wrap').remove();});`;
+  const script = `const card=${cardHtml.toString()};const esc=${esc.toString()};let venue='alcudia';let offset=${FIRST};
+    const wrap=document.querySelector('.load-more-wrap');const c=document.getElementById('cards');
+    async function load(n){const r=await fetch('/api/albums?venue='+venue+'&offset='+offset+'&limit='+n);const j=await r.json();
+      j.items.forEach(a=>c.insertAdjacentHTML('beforeend',card(a)));offset+=j.items.length;wrap.style.display=j.hasMore?'':'none';}
+    document.querySelector('.btn-load').addEventListener('click',()=>load(4));
+    document.querySelectorAll('[role=tab]').forEach(t=>t.addEventListener('click',()=>{
+      document.querySelectorAll('[role=tab]').forEach(x=>x.setAttribute('aria-selected',String(x===t)));
+      venue=t.dataset.venue;offset=0;c.innerHTML='';load(${FIRST});}));`;
   return layout('Fotogalerie', body, script);
 }
 
@@ -222,8 +260,9 @@ export async function startFixtureSite({ latency = [40, 220] } = {}) {
       await delay();
       const off = Number(u.searchParams.get('offset'));
       const lim = Number(u.searchParams.get('limit'));
-      const items = albums.slice(0, 15).slice(off, off + lim);
-      return send(200, 'application/json', JSON.stringify({ items, hasMore: off + lim < 15 }));
+      const list = listFor(albums, u.searchParams.get('venue') || 'alcudia');
+      const items = list.slice(off, off + lim);
+      return send(200, 'application/json', JSON.stringify({ items, hasMore: off + lim < list.length }));
     }
     if ((m = /^\/api\/albums\/(.+)\/photos$/.exec(p))) {
       await delay();
@@ -238,8 +277,9 @@ export async function startFixtureSite({ latency = [40, 220] } = {}) {
     if ((m = /^\/gallery\/(.+)$/.exec(p))) {
       const a = all.get(m[1]);
       if (!a) return send(404, 'text/html', '<h1>404</h1>');
-      const top = albums.indexOf(a);
-      const related = top >= 0 ? [albums[(top + 1) % albums.length], albums[(top + 2) % albums.length]] : [];
+      const same = albums.filter((x) => x.venue === a.venue);
+      const top = same.indexOf(a);
+      const related = top >= 0 ? [same[(top + 1) % same.length], same[(top + 2) % same.length]] : [];
       return html(albumPage(a, related, u.searchParams));
     }
     if ((m = /^\/img\/(full|thumb)\/(.+)\/IMG_(\d+)\.png$/.exec(p))) {

@@ -7,8 +7,8 @@ import {
   pickChildLinks,
   mergeItems,
   isPaginationOf,
+  isListingVariant,
   pageKey,
-  withoutHash,
   sameSite,
   stripLocale,
   tryUrl,
@@ -22,6 +22,12 @@ export const DEFAULT_LOAD_MORE =
   'cargar\\s+m[aá]s|ver\\s+m[aá]s|mostrar\\s+m[aá]s|m[aá]s\\s+(fotos|im[aá]genes|[aá]lbumes|eventos)|' +
   'carregar\\s+m[eé]s|veure\\s+m[eé]s|mostra\\s+m[eé]s|charger\\s+plus|voir\\s+plus|afficher\\s+plus|' +
   'carica\\s+altr[ie]|mostra\\s+altr[ie]|meer\\s+laden|toon\\s+meer|^\\s*(more|mehr|m[aá]s|plus|\\+)\\s*$';
+
+// Location/category filters on the overview (the gallery covers Alcúdia, Cala Rajada & co).
+export const DEFAULT_FILTER =
+  "^\\s*(alle|all|todos|todas|tots|tot|everything|show all|alle anzeigen|ver todo|ver todos|" +
+  "alc[uú]dia|port d'alc[uú]dia|cala\\s*ra[tj]+a?da|cala\\s*ratjada|cala\\s*rajada|" +
+  "palma|magaluf|santany[ií]|cala d'or|mallorca)\\s*$";
 
 const HELPERS_SRC = `void (${installPageHelpers.toString()})(${parseSrcset.toString()})`;
 
@@ -66,11 +72,13 @@ export class GalleryCrawler extends EventEmitter {
       maxAlbums: Infinity,
       navTimeout: 60000,
       loadMore: DEFAULT_LOAD_MORE,
+      filter: DEFAULT_FILTER,
       albumPattern: null,
       proxy: null,
       ...opts,
     };
     this.loadMoreRe = new RegExp(this.opts.loadMore, 'i');
+    this.filterRe = new RegExp(this.opts.filter, 'i');
   }
 
   log(msg) {
@@ -113,7 +121,6 @@ export class GalleryCrawler extends EventEmitter {
       try {
         const resp = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: this.opts.navTimeout });
         if (resp && resp.status() >= 500) throw new Error(`HTTP ${resp.status()}`);
-        if (resp && resp.status() >= 400) this.log(`  ⚠ ${url} antwortet mit HTTP ${resp.status()}`);
         return resp;
       } catch (e) {
         lastErr = e;
@@ -123,28 +130,28 @@ export class GalleryCrawler extends EventEmitter {
     throw lastErr;
   }
 
-  async clickMarked(page, n) {
-    let clicked = 0;
-    for (let i = 1; i <= n; i++) {
-      const loc = page.locator(`[data-bgdl-lm="${i}"]`).first();
-      try {
-        await loc.scrollIntoViewIfNeeded({ timeout: 3000 });
-        await loc.click({ timeout: 4000 });
-        clicked++;
-      } catch {
-        // Covered by an overlay or detached – fall back to a DOM click.
-        const ok = await page
-          .evaluate((sel) => {
-            const el = document.querySelector(sel);
-            if (!el) return false;
-            el.click();
-            return true;
-          }, `[data-bgdl-lm="${i}"]`)
-          .catch(() => false);
-        if (ok) clicked++;
-      }
+  /** Clicks like a user; falls back to a DOM click if an overlay covers the element. */
+  async clickSelector(page, sel) {
+    const loc = page.locator(sel).first();
+    try {
+      await loc.scrollIntoViewIfNeeded({ timeout: 3000 });
+      await loc.click({ timeout: 4000 });
+      return true;
+    } catch {
+      return page
+        .evaluate((s) => {
+          const el = document.querySelector(s);
+          if (!el) return false;
+          el.click();
+          return true;
+        }, sel)
+        .catch(() => false);
     }
-    return clicked;
+  }
+
+  /** False once a real navigation replaced the document (our helpers are gone). */
+  async alive(page) {
+    return page.evaluate(() => !!window.__bgdl).catch(() => false);
   }
 
   /**
@@ -155,43 +162,98 @@ export class GalleryCrawler extends EventEmitter {
     let best = -1;
     let stable = 0;
     let clicks = 0;
-    const startUrl = withoutHash(page.url());
-    for (let round = 0; round < this.opts.maxRounds; round++) {
-      await page.evaluate(() => window.__bgdl.scroll()).catch(() => {});
-      await net.idle(page);
-      sink(await page.evaluate(() => window.__bgdl.takeNew()));
-      const n = await page.evaluate(([s, f]) => window.__bgdl.markLoadMore(s, f), [this.loadMoreRe.source, 'i']);
-      let clicked = 0;
-      if (n) {
-        clicked = await this.clickMarked(page, n);
-        clicks += clicked;
-        await page.waitForTimeout(250);
+    try {
+      for (let round = 0; round < this.opts.maxRounds; round++) {
+        await page.evaluate(() => window.__bgdl.scroll());
         await net.idle(page);
+        sink(await page.evaluate(() => window.__bgdl.takeNew()));
+        const n = await page.evaluate(([s, f]) => window.__bgdl.markLoadMore(s, f), [this.loadMoreRe.source, 'i']);
+        let clicked = 0;
+        for (let i = 1; i <= n; i++) if (await this.clickSelector(page, `[data-bgdl-lm="${i}"]`)) clicked++;
+        if (clicked) {
+          clicks += clicked;
+          await page.waitForTimeout(250);
+          await net.idle(page);
+          // A "load more" link that really navigated: the new URL is another page of this listing.
+          if (!(await this.alive(page))) return { clicks, navigatedTo: page.url() };
+        }
+        const c = await page.evaluate(() => window.__bgdl.step(false));
+        const total = c.items + c.links;
+        if (total > best) {
+          best = total;
+          stable = 0;
+        } else if (++stable >= (clicked ? 4 : 2)) break;
       }
-      if (withoutHash(page.url()) !== startUrl) {
-        // A "load more" control navigated away – treat the new URL as another page of this listing.
-        return { clicks, navigatedTo: page.url() };
-      }
-      const c = await page.evaluate(() => window.__bgdl.step(false));
-      const total = c.items + c.links;
-      if (total > best) {
-        best = total;
-        stable = 0;
-      } else if (++stable >= (clicked ? 4 : 2)) break;
+      await page.evaluate(() => window.__bgdl.step(true));
+      sink(await page.evaluate(() => window.__bgdl.takeNew()));
+    } catch (e) {
+      if (!(await this.alive(page))) return { clicks, navigatedTo: page.url() };
+      throw e;
     }
-    await page.evaluate(() => window.__bgdl.step(true)).catch(() => {});
-    sink(await page.evaluate(() => window.__bgdl.takeNew()));
     return { clicks, navigatedTo: null };
   }
 
   /**
+   * Overview pages: click every location/category filter (tabs like "Alle | Alcúdia | Cala Rajada",
+   * filter buttons, dropdowns) and expand each one completely.
+   */
+  async expandFilters(page, net, sink, enqueue) {
+    const args = [this.filterRe.source, 'i', this.loadMoreRe.source];
+    let used = 0;
+    const labels = await page.evaluate(([s, f, lm]) => window.__bgdl.filters(s, f, lm, null), args);
+    for (const label of labels) {
+      const found = await page.evaluate(([s, f, lm, l]) => window.__bgdl.filters(s, f, lm, l).length, [...args, label]).catch(() => 0);
+      if (!found || !(await this.clickSelector(page, '[data-bgdl-f="1"]'))) continue;
+      used++;
+      this.log(`  Filter "${label}" geöffnet`);
+      await page.waitForTimeout(250);
+      await net.idle(page);
+      if (!(await this.alive(page))) {
+        enqueue(page.url());
+        return used;
+      }
+      const r = await this.expand(page, net, sink);
+      if (r.navigatedTo) {
+        enqueue(r.navigatedTo);
+        return used;
+      }
+    }
+    const selects = await page.evaluate(([s, f]) => window.__bgdl.filterSelects(s, f), args).catch(() => []);
+    for (const sel of selects) {
+      for (const value of sel.values) {
+        try {
+          await page.selectOption(`[data-bgdl-sel="${sel.i}"]`, value, { timeout: 4000 });
+        } catch {
+          continue;
+        }
+        used++;
+        this.log(`  Auswahl "${value}" geöffnet`);
+        await page.waitForTimeout(250);
+        await net.idle(page);
+        if (!(await this.alive(page))) {
+          enqueue(page.url());
+          return used;
+        }
+        const r = await this.expand(page, net, sink);
+        if (r.navigatedTo) {
+          enqueue(r.navigatedTo);
+          return used;
+        }
+      }
+    }
+    return used;
+  }
+
+  /**
    * Opens a page, expands it completely and follows its pagination (?page=N, /page/N).
+   * Overview pages (`listing`) additionally get every filter clicked and every
+   * query variant of the page (?location=…, ?page=…) visited.
    * Returns everything found on all pages of this listing.
    */
-  async visit(url) {
+  async visit(url, { listing = false } = {}) {
     const page = await this.context.newPage();
     const net = new NetTracker(page);
-    const res = { url, title: '', items: [], links: new Map(), archives: new Set(), pages: 0, clicks: 0 };
+    const res = { url, title: '', items: [], links: new Map(), archives: new Set(), pages: 0, clicks: 0, filters: 0, status: 0 };
     const sink = (d) => {
       res.items.push(...d.items);
       for (const l of d.links) {
@@ -214,10 +276,17 @@ export class GalleryCrawler extends EventEmitter {
         queue.push(href);
       }
     };
+    const belongs = (href) => (listing ? isListingVariant(href, url) : isPaginationOf(href, url));
     try {
       while (queue.length && res.pages < this.opts.maxPagesPerListing) {
         const u = queue.shift();
-        await this.goto(page, u);
+        const resp = await this.goto(page, u);
+        const status = resp ? resp.status() : 200;
+        if (!res.status) res.status = status;
+        if (status >= 400) {
+          this.log(`  ⚠ ${u} antwortet mit HTTP ${status} – übersprungen`);
+          continue;
+        }
         await net.idle(page, { timeout: 15000 });
         await page.evaluate(HELPERS_SRC);
         const consent = await page.evaluate(() => window.__bgdl.dismissConsent());
@@ -226,7 +295,8 @@ export class GalleryCrawler extends EventEmitter {
         const r = await this.expand(page, net, sink);
         res.clicks += r.clicks;
         if (r.navigatedTo) enqueue(r.navigatedTo);
-        for (const l of res.links.values()) if (isPaginationOf(l.href, url)) enqueue(l.href);
+        else if (listing) res.filters += await this.expandFilters(page, net, sink, enqueue);
+        for (const l of res.links.values()) if (belongs(l.href)) enqueue(l.href);
       }
     } finally {
       await page.close().catch(() => {});
@@ -246,7 +316,11 @@ export class GalleryCrawler extends EventEmitter {
 
     for (const gu of galleryUrls) {
       this.log(`Galerie öffnen: ${gu}`);
-      const g = await this.visit(gu);
+      const g = await this.visit(gu, { listing: true });
+      if (g.status >= 400 || !g.pages) {
+        this.emit('gallery', { url: gu, albums: 0, pages: 0, clicks: 0, filters: 0, skipped: true });
+        continue;
+      }
       const found = pickAlbumLinks([...g.links.values()], gu, { albumPattern: this.opts.albumPattern });
       const albumKeys = new Set(found.map((a) => pageKey(a.url)));
       for (const it of g.items) {
@@ -260,7 +334,7 @@ export class GalleryCrawler extends EventEmitter {
         queue.push({ ...a, gallery: gu, depth: 1, parent: null });
         added++;
       }
-      this.emit('gallery', { url: gu, albums: added, pages: g.pages, clicks: g.clicks });
+      this.emit('gallery', { url: gu, albums: added, pages: g.pages, clicks: g.clicks, filters: g.filters });
     }
 
     let started = 0;

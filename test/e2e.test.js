@@ -34,10 +34,17 @@ async function downloadedMarkers(dir) {
   return res;
 }
 
-test('lädt ALLE Fotos ALLER Alben (inkl. "Mehr laden", Endlos-Scroll, Seiten, Unteralben) in voller Größe', { timeout: 600_000 }, async () => {
+test('lädt ALLE Fotos ALLER Alben (Alcúdia + Cala Rajada-Tab, "Mehr laden", Endlos-Scroll, Seiten, Unteralben) in voller Größe', { timeout: 600_000 }, async () => {
   const logs = [];
-  const r = await run(['--url', `${site.url}/gallery`, '--out', out], { log: (m) => logs.push(m), error: (m) => logs.push(m) });
+  // /cala-rajada/gallery does not exist on the fixture (HTTP 404) and must simply be skipped.
+  const r = await run(['--url', `${site.url}/gallery`, '--url', `${site.url}/cala-rajada/gallery`, '--out', out], {
+    log: (m) => logs.push(m),
+    error: (m) => logs.push(m),
+  });
   assert.equal(r.exitCode, 0, logs.join('\n'));
+  assert.ok(logs.some((l) => l.includes('Filter "Cala Rajada"')), 'Cala Rajada-Tab wurde geöffnet');
+  const calaAlbums = site.albums.filter((a) => a.venue === 'cala-rajada');
+  for (const a of calaAlbums) assert.ok(r.manifest.albums.some((m) => m.url.endsWith(`/gallery/${a.slug}`)), `Cala Rajada-Album ${a.slug}`);
 
   const files = await downloadedMarkers(out);
   const kinds = new Set(files.map((f) => f.marker?.split(':')[0]));

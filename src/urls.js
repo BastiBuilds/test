@@ -111,6 +111,15 @@ export function isPaginationOf(href, base) {
   return false;
 }
 
+/** Same overview page with another query (?page=2, ?location=cala-rajada, …) or a /page/N suffix. */
+export function isListingVariant(href, base) {
+  if (isPaginationOf(href, base)) return true;
+  const u = tryUrl(href);
+  const b = tryUrl(base);
+  if (!u || !b || !sameSite(u, b)) return false;
+  return stripLocale(u.pathname) === stripLocale(b.pathname) && u.search !== '' && u.search !== b.search;
+}
+
 function pathUnder(pathname, prefix) {
   const p = stripLocale(pathname);
   const pre = stripLocale(prefix);

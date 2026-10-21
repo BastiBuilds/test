@@ -304,6 +304,72 @@ export function installPageHelpers(parseSrcset) {
     return n;
   }
 
+  const FILTER_BOX_RE = /filter|tabs?\b|tablist|categor|location|ubicaci|standort|lugar|sede|venue|segment/i;
+  const metaOf = (el) => `${typeof el.className === 'string' ? el.className : ''} ${el.id || ''} ${el.getAttribute('role') || ''}`;
+  const navigates = (a) => {
+    const raw = a.getAttribute('href');
+    return !!raw && !raw.startsWith('#') && !/^javascript:/i.test(raw) && a.href.split('#')[0] !== here();
+  };
+
+  /**
+   * Filter controls of an overview page (tabs, filter buttons, radio labels): returns their labels.
+   * With `markLabel`, marks the control with that label as data-bgdl-f="1".
+   */
+  function filters(src, flags, loadMoreSrc, markLabel) {
+    const re = new RegExp(src, flags);
+    const lm = new RegExp(loadMoreSrc, flags);
+    document.querySelectorAll('[data-bgdl-f]').forEach((e) => e.removeAttribute('data-bgdl-f'));
+    const out = [];
+    const sel =
+      '[role=tab], [role=radio], button, a, [role=button], label, li, ' +
+      '[data-filter], [data-category], [data-location], [data-venue], [data-club], [data-tab]';
+    for (const el of document.querySelectorAll(sel)) {
+      const text = labelOf(el);
+      if (!text || text.length > 40 || lm.test(text) || !visible(el)) continue;
+      if (el.tagName === 'A' && navigates(el)) continue; // real links: handled as URL variants
+      if (el.tagName !== 'A' && [...el.querySelectorAll('a[href]')].some(navigates)) continue;
+      if (el.closest('header nav, footer, #cookie, [class*="cookie" i], [id*="cookie" i], [class*="consent" i]')) continue;
+      const dataTab = ['data-filter', 'data-category', 'data-location', 'data-venue', 'data-club', 'data-tab'].some((a) => el.hasAttribute(a));
+      const isTab = ['tab', 'radio'].includes(el.getAttribute('role')) || dataTab;
+      let inBox = false;
+      for (let p = el.parentElement, i = 0; p && i < 4; p = p.parentElement, i++) {
+        if (FILTER_BOX_RE.test(metaOf(p))) {
+          inBox = true;
+          break;
+        }
+      }
+      if (el.tagName === 'LI' && !isTab && !inBox) continue;
+      if (!(isTab || inBox || re.test(text))) continue;
+      if (out.includes(text)) continue;
+      if (markLabel != null) {
+        if (text === markLabel) {
+          el.setAttribute('data-bgdl-f', '1');
+          return [text];
+        }
+        continue;
+      }
+      out.push(text);
+      if (out.length >= 25) break;
+    }
+    return markLabel != null ? [] : out;
+  }
+
+  /** <select> dropdowns that filter the overview (location/category), with all their values. */
+  function filterSelects(src, flags) {
+    const re = new RegExp(src, flags);
+    const out = [];
+    for (const s of document.querySelectorAll('select')) {
+      if (s.options.length < 2 || s.options.length > 30) continue;
+      let boxHit = false;
+      for (let p = s, i = 0; p && i < 4; p = p.parentElement, i++) if (FILTER_BOX_RE.test(metaOf(p) + ' ' + (p.getAttribute('name') || ''))) boxHit = true;
+      const optHit = [...s.options].some((o) => re.test(o.text));
+      if (!boxHit && !optHit) continue;
+      s.setAttribute('data-bgdl-sel', String(out.length + 1));
+      out.push({ i: out.length + 1, values: [...s.options].map((o) => o.value).filter((v) => v !== s.value) });
+    }
+    return out;
+  }
+
   function dismissConsent() {
     const re = /^(alle akzeptieren|alles akzeptieren|akzeptieren|zustimmen|alle zulassen|einverstanden|accept all|accept all cookies|accept|i accept|agree|i agree|allow all|allow cookies|got it|ok|aceptar|aceptar todo|aceptar todas|acepto|acceptar|accepta|tout accepter|accepter|accetta|accetta tutto)$/i;
     for (const el of document.querySelectorAll('button, a, [role=button], input[type=button], input[type=submit]')) {
@@ -328,5 +394,5 @@ export function installPageHelpers(parseSrcset) {
     return out;
   }
 
-  window.__bgdl = { step, scroll, markLoadMore, dismissConsent, takeNew };
+  window.__bgdl = { step, scroll, markLoadMore, filters, filterSelects, dismissConsent, takeNew };
 }
